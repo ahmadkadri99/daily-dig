@@ -1,16 +1,14 @@
 import { Hono, type Context } from 'hono';
 import { context, reddit } from '@devvit/web/server';
 import type {
-  BuryRequest,
-  BuryResponse,
-  DigRequest,
-  DigResponse,
   ErrorResponse,
-  InitGameResponse,
-  LeaderboardResponse,
+  InitResponse,
+  SubmitRequest,
+  SubmitResponse,
+  UpvoteRequest,
+  UpvoteResponse,
 } from '../../shared/api';
-import { dayKey } from '../../shared/dateUtil';
-import { doBury, doDig, getLeaderboard, initToday } from '../core/game';
+import { initState, submitArgument, upvoteArgument } from '../core/sides';
 
 export const api = new Hono();
 
@@ -20,23 +18,26 @@ const missingPost = (c: Context) =>
     400
   );
 
+const buildInit = async (): Promise<InitResponse> => {
+  const username = (await reddit.getCurrentUsername()) ?? 'anonymous';
+  const { prompt, tally, args, player, yesterday, playerCount } =
+    await initState(username);
+  return {
+    type: 'init',
+    username,
+    prompt,
+    tally,
+    args,
+    player,
+    yesterday,
+    playerCount,
+  };
+};
+
 api.get('/init', async (c) => {
   if (!context.postId) return missingPost(c);
-
   try {
-    const username = (await reddit.getCurrentUsername()) ?? 'anonymous';
-    const [{ date, treasureCount, player }, leaderboard] = await Promise.all([
-      initToday(username),
-      getLeaderboard(dayKey()),
-    ]);
-    return c.json<InitGameResponse>({
-      type: 'init',
-      date,
-      username,
-      treasureCount,
-      player,
-      leaderboard,
-    });
+    return c.json<InitResponse>(await buildInit());
   } catch (err) {
     console.error('init error', err);
     return c.json<ErrorResponse>(
@@ -46,81 +47,66 @@ api.get('/init', async (c) => {
   }
 });
 
-api.post('/dig', async (c) => {
+api.get('/refresh', async (c) => {
   if (!context.postId) return missingPost(c);
-
   try {
-    const body = await c.req.json<DigRequest>();
-    if (
-      !body ||
-      typeof body.pos?.x !== 'number' ||
-      typeof body.pos?.y !== 'number'
-    ) {
-      return c.json<ErrorResponse>(
-        { status: 'error', message: 'pos.x and pos.y required' },
-        400
-      );
-    }
-    const username = (await reddit.getCurrentUsername()) ?? 'anonymous';
-    const result = await doDig(username, body.pos);
-    return c.json<DigResponse>(result);
+    return c.json<InitResponse>(await buildInit());
   } catch (err) {
-    console.error('dig error', err);
+    console.error('refresh error', err);
     return c.json<ErrorResponse>(
-      { status: 'error', message: 'dig failed' },
+      { status: 'error', message: 'refresh failed' },
       500
     );
   }
 });
 
-api.post('/bury', async (c) => {
+api.post('/submit', async (c) => {
   if (!context.postId) return missingPost(c);
-
   try {
-    const body = await c.req.json<BuryRequest>();
-    if (
-      !body ||
-      typeof body.pos?.x !== 'number' ||
-      typeof body.pos?.y !== 'number' ||
-      typeof body.clue !== 'string'
-    ) {
-      return c.json<ErrorResponse>(
-        { status: 'error', message: 'pos and clue required' },
-        400
-      );
-    }
+    const body = await c.req.json<SubmitRequest>();
     const username = (await reddit.getCurrentUsername()) ?? 'anonymous';
-    const result = await doBury(username, body.pos, body.clue);
-    return c.json<BuryResponse>({
-      type: 'bury',
+    const result = await submitArgument(username, body?.side, body?.text);
+    return c.json<SubmitResponse>({
+      type: 'submit',
       ok: result.ok,
       message: result.message,
       player: result.player,
+      ...(result.argument ? { argument: result.argument } : {}),
+      tally: result.tally,
     });
   } catch (err) {
-    console.error('bury error', err);
+    console.error('submit error', err);
     return c.json<ErrorResponse>(
-      { status: 'error', message: 'bury failed' },
+      { status: 'error', message: 'submit failed' },
       500
     );
   }
 });
 
-api.get('/leaderboard', async (c) => {
+api.post('/upvote', async (c) => {
   if (!context.postId) return missingPost(c);
-
   try {
-    const date = dayKey();
-    const entries = await getLeaderboard(date);
-    return c.json<LeaderboardResponse>({
-      type: 'leaderboard',
-      date,
-      entries,
+    const body = await c.req.json<UpvoteRequest>();
+    if (!body?.argumentId) {
+      return c.json<ErrorResponse>(
+        { status: 'error', message: 'argumentId required' },
+        400
+      );
+    }
+    const username = (await reddit.getCurrentUsername()) ?? 'anonymous';
+    const result = await upvoteArgument(username, body.argumentId);
+    return c.json<UpvoteResponse>({
+      type: 'upvote',
+      ok: result.ok,
+      message: result.message,
+      ...(result.argument ? { argument: result.argument } : {}),
+      player: result.player,
+      tally: result.tally,
     });
   } catch (err) {
-    console.error('leaderboard error', err);
+    console.error('upvote error', err);
     return c.json<ErrorResponse>(
-      { status: 'error', message: 'leaderboard failed' },
+      { status: 'error', message: 'upvote failed' },
       500
     );
   }
